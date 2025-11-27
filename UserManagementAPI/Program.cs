@@ -1,6 +1,8 @@
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
-
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseMiddleware<TokenValidationMiddleware>();
+app.UseMiddleware<RequestResponseLoggingMiddleware>();
 app.MapGet("/", () => "Hello World!");
 
 // In-memory data store
@@ -84,4 +86,101 @@ public class User
     public string? Name { get; set; }
     public string? Email { get; set; }
     public int Age { get; set; }
+}
+
+public class RequestResponseLoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestResponseLoggingMiddleware> _logger;
+
+    public RequestResponseLoggingMiddleware(RequestDelegate next, ILogger<RequestResponseLoggingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        // Log request details
+        var method = context.Request.Method;
+        var path = context.Request.Path;
+        _logger.LogInformation("Incoming Request: {Method} {Path}", method, path);
+
+        // Call the next middleware in the pipeline
+        await _next(context);
+
+        // Log response details
+        var statusCode = context.Response.StatusCode;
+        _logger.LogInformation("Outgoing Response: {StatusCode}", statusCode);
+    }
+}
+public class ExceptionHandlingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+
+    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        try
+        {
+            // Pass request down the pipeline
+            await _next(context);
+        }
+        catch (Exception ex)
+        {
+            // Log the exception
+            _logger.LogError(ex, "Unhandled exception occurred.");
+
+            // Return consistent JSON error response
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            context.Response.ContentType = "application/json";
+
+            var errorResponse = new { error = "Internal server error." };
+            await context.Response.WriteAsJsonAsync(errorResponse);
+        }
+    }
+}
+public class TokenValidationMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<TokenValidationMiddleware> _logger;
+
+    // For demo purposes, we'll use a hardcoded valid token.
+    // In production, you'd validate JWTs or check against a database/identity provider.
+    private const string ValidToken = "my-secret-token";
+
+    public TokenValidationMiddleware(RequestDelegate next, ILogger<TokenValidationMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        // Look for Authorization header
+        if (!context.Request.Headers.TryGetValue("Authorization", out var token))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "Unauthorized: Missing token." });
+            return;
+        }
+
+        // Validate token (simple equality check here)
+        if (token != $"Bearer {ValidToken}")
+        {
+            _logger.LogWarning("Invalid token received: {Token}", token.ToString());
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "Unauthorized: Invalid token." });
+            return;
+        }
+
+        // Token is valid → continue down the pipeline
+        await _next(context);
+    }
 }
